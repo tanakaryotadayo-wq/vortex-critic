@@ -193,6 +193,7 @@ except ImportError:
 
 
 # ─── Fusion Gate relay ───────────────────────────────────────────────────────
+def call_fusion_gate(tool_name: str, arguments: dict) -> dict:
     """fusion-gate の HTTP API にリクエストを送る"""
     url = f"{FUSION_GATE_URL}/api/tool/{tool_name}"
     data = json.dumps(arguments).encode("utf-8")

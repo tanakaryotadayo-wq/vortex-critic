@@ -147,20 +147,34 @@ def _default_artifact_content(entry: dict, title: str) -> str:
 
 # ─── Auto-index via ConversationMemory ───────────────────────────────────────
 
+def _load_conversation_memory():
+    """Best-effort load ~/Newgate/intelligence/conversation_memory.ConversationMemory."""
+    newgate_root = Path(os.environ.get("NEWGATE_ROOT", os.path.expanduser("~/Newgate")))
+    cm_path = newgate_root / "intelligence" / "conversation_memory.py"
+    if not cm_path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("conversation_memory", str(cm_path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod.ConversationMemory()
+
+
 def _try_index_knowledge(ki_dir: str) -> bool:
-    """Best-effort index newly promoted KI. Returns True on success."""
+    """Best-effort index newly promoted KI. Returns True on success.
+
+    ConversationMemory.index_knowledge(force: bool) re-scans the whole
+    knowledge dir; we force=True so the just-promoted KI is picked up.
+    `ki_dir` is retained for logging/debug only.
+    """
     try:
-        newgate_root = Path(os.environ.get("NEWGATE_ROOT", os.path.expanduser("~/Newgate")))
-        cm_path = newgate_root / "intelligence" / "conversation_memory.py"
-        if not cm_path.exists():
+        cm = _load_conversation_memory()
+        if cm is None:
             return False
-        spec = importlib.util.spec_from_file_location("conversation_memory", str(cm_path))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
-        cm = mod.ConversationMemory()
-        cm.index_knowledge(ki_dir)
+        cm.index_knowledge(force=True)
+        _log.debug("indexed knowledge after promote (new KI dir: %s)", ki_dir)
         return True
-    except Exception:
+    except Exception as exc:
+        _log.debug("index_knowledge failed (non-fatal): %s", exc)
         return False
 
 
@@ -205,26 +219,39 @@ def emit_fleet_log(event_type: str, task: str, result: str, route_id: str = "") 
 
 # ─── Public API — recall ─────────────────────────────────────────────────────
 
-def try_recall(query: str, top_k: int = 3) -> str:
-    """Best-effort memory recall via ConversationMemory. Returns empty on failure."""
+def try_recall(query: str, top_k: int = 3, min_score: float = 0.3) -> str:
+    """Best-effort memory recall via ConversationMemory.search.
+
+    Returns a short context block ready to be injected into a prompt,
+    or "" on any failure. ConversationMemory exposes `search(query,
+    top_k, min_score)`, not `recall`; this wrapper hides that detail
+    from callers.
+    """
     try:
-        newgate_root = Path(os.environ.get("NEWGATE_ROOT", os.path.expanduser("~/Newgate")))
-        cm_path = newgate_root / "intelligence" / "conversation_memory.py"
-        if not cm_path.exists():
+        cm = _load_conversation_memory()
+        if cm is None:
             return ""
-        spec = importlib.util.spec_from_file_location("conversation_memory", str(cm_path))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
-        cm = mod.ConversationMemory()
-        results = cm.recall(query, top_k=top_k)
+        results = cm.search(query, top_k=top_k, min_score=min_score)
         if not results:
             return ""
         lines = ["[Memory Recall]"]
         for item in results[:top_k]:
-            text = item.get("text") or item.get("content") or str(item)
-            lines.append(f"- {text[:300]}")
+            text = (
+                item.get("text")
+                or item.get("content")
+                or item.get("chunk")
+                or item.get("snippet")
+                or ""
+            )
+            src = item.get("source_type") or item.get("type") or ""
+            cid = item.get("chunk_id") or item.get("id") or ""
+            header = f"- [{src} {cid}]".rstrip()
+            lines.append(header)
+            if text:
+                lines.append(f"  {text[:300]}")
         return "\n".join(lines) + "\n---\n"
-    except Exception:
+    except Exception as exc:
+        _log.debug("try_recall failed (non-fatal): %s", exc)
         return ""
 
 
