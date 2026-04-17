@@ -75,13 +75,11 @@ vortex-critic/
 
 | Path | 内容 |
 |------|------|
-| `assets/critic/README.md` | DeepSeek / VORTEX critic hooks |
-| `assets/gemini/README.md` | Gemini A2A bridge, memory pipeline, PCC critic |
-| `assets/pipeline/README.md` | Pipeline① の全体像 |
-| `assets/pipeline/scripts/README.md` | Pipeline① 起動・runner スクリプト |
-| `assets/pipeline/intelligence/README.md` | packet harvest / packet model |
-| `assets/pipeline/gate/README.md` | CBF server |
-| `mcp-server/README.md` | Fusion Orchestrator v2 MCP server |
+| `README/README.md` | VORTEX 複合モジュール全体の索引 |
+| `README/critic.md` | DeepSeek / VORTEX critic モジュール |
+| `README/gemini.md` | Gemini A2A bridge / memory pipeline モジュール |
+| `README/pipeline.md` | Pipeline① モジュール |
+| `README/mcp-server.md` | Fusion Orchestrator v2 MCP モジュール |
 
 ## 設計詳細
 
