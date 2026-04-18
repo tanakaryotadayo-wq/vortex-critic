@@ -75,11 +75,13 @@ vortex-critic/
 
 | Path | 内容 |
 |------|------|
-| `README/README.md` | VORTEX 複合モジュール全体の索引 |
-| `README/critic.md` | DeepSeek / VORTEX critic モジュール |
-| `README/gemini.md` | Gemini A2A bridge / memory pipeline モジュール |
-| `README/pipeline.md` | Pipeline① モジュール |
-| `README/mcp-server.md` | Fusion Orchestrator v2 MCP モジュール |
+| `docs/README.md` | VORTEX 複合モジュール全体の定義書 |
+| `docs/extension.md` | VS Code 拡張シェル / UI / command dispatcher |
+| `docs/critic.md` | DeepSeek / VORTEX critic モジュール |
+| `docs/gemini.md` | Gemini A2A bridge / memory pipeline モジュール |
+| `docs/pipeline.md` | Pipeline① モジュール |
+| `docs/mcp-server.md` | 外部 Fusion Orchestrator v2 MCP モジュール |
+| `docs/contracts/README.md` | 厳密な入出力契約の索引 |
 
 ## 設計詳細
 
