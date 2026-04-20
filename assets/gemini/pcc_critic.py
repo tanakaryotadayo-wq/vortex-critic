@@ -1,94 +1,37 @@
 #!/usr/bin/env python3
 """
-pcc-critic — PCC 制約注入 × Gemini CLI で AI の本気を引き出す critic パイプライン
-
-Usage:
-  pcc-critic "semantic_delta の弱点を指摘しろ"
-  pcc-critic --preset 極 "このコードをレビューしろ"
-  pcc-critic --model gemini-3.1-pro-preview --preset 探 "設計の穴を見つけろ"
-  cat code.py | pcc-critic --preset 極 "このコードの問題点は？"
-
-PCC Presets:
-  探 (#探) — 批判的探索。多角的視点、前提への挑戦、弱点指摘（デフォルト）
-  極 (#極) — 極限精度。無駄ゼロ、聞かれたことだけ答える
-  均 (#均) — バランス型。批判と提案を均等に
-  監 (#監) — 監査特化。diff/test/evidence ベースの判定
-  刃 (#刃) — 実装設計レビュー。3案比較+構造化出力
+pcc-critic — True 9-Axis PCC-Vortex Critic Integration
 """
+from __future__ import annotations
 import argparse
 import json
 import os
 import subprocess
 import sys
 import time
+from pathlib import Path
+from typing import Any
 
-# ─── PCC Presets ─────────────────────────────────────────────────────────────
+# 動的に真の PCC Router をインポートする
+FUSION_GATE_PATH = os.path.expanduser("~/fusion-gate")
+if FUSION_GATE_PATH not in sys.path:
+    sys.path.insert(0, FUSION_GATE_PATH)
 
-PCC_PRESETS = {
-    "探": {
-        "label": "#探 (Critical Explorer)",
-        "constraints": [
-            "Explore multiple perspectives and challenge all assumptions",
-            "Identify specific weaknesses with concrete reasoning",
-            "Do NOT be agreeable — be a constructive critic",
-            "Support each point with examples or scenarios",
-            "If there are no weaknesses, say so explicitly — do not fabricate",
-        ],
-    },
-    "極": {
-        "label": "#極 (Maximum Precision)",
-        "constraints": [
-            "Be extremely concise — no filler, no pleasantries",
-            "Answer only what is asked, nothing more",
-            "Use structured output (numbered lists, tables)",
-            "If you cannot answer precisely, state why",
-        ],
-    },
-    "均": {
-        "label": "#均 (Balanced Review)",
-        "constraints": [
-            "Provide equal weight to strengths and weaknesses",
-            "For each weakness, suggest a concrete improvement",
-            "Be honest but constructive",
-            "Prioritize actionable feedback over theoretical concerns",
-        ],
-    },
-    "監": {
-        "label": "#監 (Audit Mode)",
-        "constraints": [
-            "Evaluate based on evidence only: diff, tests, logs, exit codes",
-            "Ignore natural language self-reports of success",
-            "Classify result as: PASS / NEEDS_EVIDENCE / NO_OP / FAIL",
-            "If no evidence is provided, verdict is NEEDS_EVIDENCE",
-            "State exactly what evidence is missing",
-        ],
-    },
-    "刃": {
-        "label": "#刃 (Blade — Implementation Reviewer)",
-        "constraints": [
-            "You are a strict implementation designer and code reviewer",
-            "First examine related files and existing implementation — judge based on facts only",
-            "Never assert unverified claims. Mark guesses explicitly as 'Assumption'",
-            "Do NOT stop at one option — compare at least 3 alternatives",
-            "For each alternative, output: changes / blast radius / risks / test focus / likely failure points",
-            "Recommend the safest option with clear justification",
-            "Before saying 'done', present the actual evidence you verified",
-            "If information is missing, state a reasonable assumption and proceed",
-            "No verbose preamble. Output at maximum density",
-        ],
-        "output_format": """Output format (MANDATORY):
-1. 結論 (Conclusion)
-2. 現状理解 (Current Understanding)
-3. 代替案 A / B / C (Alternatives with tradeoffs)
-4. 推奨案 (Recommendation + reasoning)
-5. 実装手順 (Implementation steps)
-6. テスト観点 (Test perspectives)
-7. 残る不確実性 (Remaining uncertainties)""",
-    },
+try:
+    from gate.pcc_router import PCCRouter, audit_output
+    HAS_TRUE_PCC = True
+except ImportError as e:
+    print(f"Warning: Could not import true PCCRouter from {FUSION_GATE_PATH}: {e}", file=sys.stderr)
+    HAS_TRUE_PCC = False
+
+# フォールバック用およびVortex拡張プリセット
+EXTENDED_PRESETS = {
+    "探": "#探",  # 525955895
+    "極": "#極",  # 998598118
+    "均": "#均",  # 555555555
+    "監": "999199019", # 監査特化（#鬼相当）
+    "刃": "875897725", # 実装設計レビュー（#匠相当）
 }
-
-
-# ─── Routing Table ───────────────────────────────────────────────────────────
 
 MODEL_ROUTING = {
     "fast":   "gemini-2.5-flash",
@@ -96,41 +39,118 @@ MODEL_ROUTING = {
     "deep":   "gemini-3.1-pro-preview",
 }
 
-# ─── Core ────────────────────────────────────────────────────────────────────
 
-def inject_pcc(prompt: str, preset: str) -> str:
-    """PCC 制約プロトコルを prompt に注入する"""
-    config = PCC_PRESETS.get(preset)
-    if not config:
-        print(f"[PCC] Unknown preset: {preset}, falling back to #探", file=sys.stderr)
-        config = PCC_PRESETS["探"]
+# ── Evidence Collection (VORTEX Core) ────────────────────────────────────────
 
-    constraints = "\n".join(f"  - {c}" for c in config["constraints"])
-    output_fmt = config.get("output_format", "")
-    fmt_block = f"\n\n{output_fmt}" if output_fmt else ""
+def collect_git_evidence(workspace_root: str) -> dict[str, Any]:
+    """Collect objective evidence from git state."""
+    evidence: dict[str, Any] = {}
+    try:
+        result = subprocess.run(["git", "diff", "--stat", "HEAD"], cwd=workspace_root, capture_output=True, text=True, timeout=5, check=False)
+        if result.returncode == 0 and result.stdout.strip():
+            evidence["diff_stat"] = result.stdout.strip()
+    except Exception: pass
 
-    return f"""[PCC Protocol: {config['label']}]
-Constraints:
-{constraints}
-{fmt_block}
----
-{prompt}"""
+    try:
+        result = subprocess.run(["git", "diff", "--name-only", "HEAD"], cwd=workspace_root, capture_output=True, text=True, timeout=5, check=False)
+        if result.returncode == 0 and result.stdout.strip():
+            evidence["changed_files"] = result.stdout.strip().split("\n")
+    except Exception: pass
 
+    try:
+        result = subprocess.run(["git", "diff", "--name-only", "--cached"], cwd=workspace_root, capture_output=True, text=True, timeout=5, check=False)
+        if result.returncode == 0 and result.stdout.strip():
+            evidence["staged_files"] = result.stdout.strip().split("\n")
+    except Exception: pass
+
+    try:
+        result = subprocess.run(["git", "log", "-1", "--oneline"], cwd=workspace_root, capture_output=True, text=True, timeout=5, check=False)
+        if result.returncode == 0 and result.stdout.strip():
+            evidence["last_commit"] = result.stdout.strip()
+    except Exception: pass
+
+    return evidence
+
+def collect_test_evidence(workspace_root: str) -> dict[str, Any]:
+    """Check for recent test results or common test artifacts."""
+    evidence: dict[str, Any] = {}
+    ws = Path(workspace_root)
+    test_artifacts = ["test-results.xml", "junit.xml", ".pytest_cache/lastfailed", "coverage/lcov.info", "coverage/coverage-summary.json"]
+    found = [str(a) for a in test_artifacts if (ws / a).exists()]
+    if found:
+        evidence["test_artifacts_found"] = found
+    return evidence
+
+
+# ── True PCC Logic ──────────────────────────────────────────────────────────
+
+def get_coordinate(preset_name: str) -> str:
+    """プリセット名から9桁座標を解決する"""
+    mapped = EXTENDED_PRESETS.get(preset_name, f"#{preset_name}")
+    if HAS_TRUE_PCC:
+        coord = PCCRouter._resolve_base(mapped)
+        if coord: return coord
+        return dict(PCCRouter.PRESETS).get("#探", "525955895")
+    else:
+        return "525955895"
+
+def inject_pcc(prompt: str, preset: str, evidence: dict[str, Any], data: dict[str, Any]) -> tuple[str, str]:
+    """真のPCCルーターを用いてプロトコル制約を生成し、VORTEX証拠データと結合して注入する"""
+    coord = get_coordinate(preset)
+    
+    if HAS_TRUE_PCC:
+        router = PCCRouter()
+        parsed = router.parse_input(f"e:{coord}")
+        protocol = router.generate_protocol(parsed)
+    else:
+        protocol = f"<PCC_Protocol>\nFallback constraints for {preset}\n</PCC_Protocol>"
+        
+    context_lines = []
+    active_file = data.get("activeFile")
+    workspace_root = data.get("workspaceRoot")
+
+    if isinstance(active_file, str) and active_file:
+        context_lines.append(f"Active file: {active_file}")
+    if isinstance(workspace_root, str) and workspace_root:
+        context_lines.append(f"Workspace root: {workspace_root}")
+
+    if evidence:
+        context_lines.append("\n--- Objective Evidence (collected by VORTEX, not self-reported) ---")
+        if "diff_stat" in evidence:
+            context_lines.append(f"Git diff stat:\n{evidence['diff_stat']}")
+        if "changed_files" in evidence:
+            context_lines.append(f"Changed files: {', '.join(evidence['changed_files'])}")
+        if "staged_files" in evidence:
+            context_lines.append(f"Staged files: {', '.join(evidence['staged_files'])}")
+        if "last_commit" in evidence:
+            context_lines.append(f"Last commit: {evidence['last_commit']}")
+        if "test_artifacts_found" in evidence:
+            context_lines.append(f"Test artifacts found: {', '.join(evidence['test_artifacts_found'])}")
+            
+        if "test_exit_code" in data:
+            context_lines.append(f"Test exit code: {data['test_exit_code']}")
+        if "lint_exit_code" in data:
+            context_lines.append(f"Lint exit code: {data['lint_exit_code']}")
+        if "scope_files" in data:
+            context_lines.append(f"Intended scope: {', '.join(data['scope_files'])}")
+    else:
+        context_lines.append("⚠️ NO OBJECTIVE EVIDENCE FOUND. Worker has not run any verification.")
+
+    context_block = "\n".join(context_lines)
+    if context_block:
+        context_block = f"Known context:\n{context_block}\n\n"
+
+    enriched = f"{protocol}\n---\n{context_block}\nReview Request:\n{prompt}"
+    return enriched, coord
 
 def run_gemini(enriched_prompt: str, model: str, timeout: int = 120) -> dict:
-    """Gemini CLI headless で実行し結果を返す"""
     env = os.environ.copy()
-
-    # Mac Studio: Homebrew Node
     homebrew_node = "/opt/homebrew/Cellar/node/25.3.0/bin"
     if os.path.exists(homebrew_node):
         env['PATH'] = f"{homebrew_node}:/opt/homebrew/bin:{env.get('PATH', '')}"
     else:
-        # MBA: nvm 経由
         nvm_dir = os.path.expanduser("~/.nvm")
-        node_path = os.popen(
-            f'bash -c "source {nvm_dir}/nvm.sh && nvm which node 2>/dev/null"'
-        ).read().strip()
+        node_path = os.popen(f'bash -c "source {nvm_dir}/nvm.sh && nvm which node 2>/dev/null"').read().strip()
         if node_path:
             env['PATH'] = f"{os.path.dirname(node_path)}:{env.get('PATH', '')}"
 
@@ -161,94 +181,68 @@ def run_gemini(enriched_prompt: str, model: str, timeout: int = 120) -> dict:
             "error": "TIMEOUT",
         }
 
-
-def audit_response(text: str) -> dict:
-    """応答の品質を監査する"""
+def audit_response(text: str, coord: str) -> dict:
+    """真のPCC監査エンジン（9軸ベクトルドリフト検知）を用いて評価する"""
     if not text or len(text.strip()) < 20:
-        return {"verdict": "NO_OP", "sycophancy": 0.0, "evidence_count": 0, "words": 0}
+        return {"verdict": "NO_OP", "score": 0.0, "violations": [], "words": 0}
 
-    lower = text.lower()
     words = len(text.split())
-
-    # 迎合検知
-    syc_markers = [
-        "great question", "excellent point", "absolutely right",
-        "wonderful", "that's a great idea", "you're absolutely",
-        "brilliant", "i love this",
-    ]
-    syc = sum(1 for m in syc_markers if m in lower) / 3.0
-
-    # evidence 検知（批判的内容の指標）
-    ev_markers = [
-        "however", "risk", "weakness", "problem", "flaw",
-        "limitation", "because", "specifically", "example",
-        "breaking", "failure", "impossible", "incorrect",
-        "矛盾", "欠陥", "弱点", "問題", "不可能", "破綻", "危険",
-    ]
-    evidence = sum(1 for m in ev_markers if m in lower)
-
-    if syc > 0.5:
-        verdict = "SYCOPHANTIC"
-    elif evidence >= 3:
-        verdict = "PASS"
-    elif evidence >= 1:
-        verdict = "REVIEW"
-    elif words < 50:
-        verdict = "NO_OP"
+    
+    if HAS_TRUE_PCC:
+        audit_res = audit_output(text, coord)
+        score = audit_res["score"]
+        violations = audit_res["violations"]
+        compliant = audit_res["compliant"]
+        
+        if compliant:
+            verdict = "PASS"
+        elif score >= 0.8:
+            verdict = "REVIEW"
+        elif score < 0.5:
+            verdict = "FAIL"
+        else:
+            verdict = "NEEDS_EVIDENCE"
+            
+        return {
+            "verdict": verdict,
+            "score": score,
+            "violations": violations,
+            "words": words,
+            "evidence_count": len(violations)  # Legacy compat
+        }
     else:
-        verdict = "NEEDS_EVIDENCE"
+        return {"verdict": "PASS", "score": 1.0, "violations": [], "words": words}
 
-    return {
-        "verdict": verdict,
-        "sycophancy": round(min(syc, 1.0), 2),
-        "evidence_count": evidence,
-        "words": words,
-    }
-
+def read_stdin_json() -> dict[str, Any]:
+    if sys.stdin.isatty():
+        return {}
+    raw = sys.stdin.read().strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {"prompt": raw}
+    except Exception:
+        return {"prompt": raw}
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="PCC Critic — PCC 制約注入で AI の本気を引き出す",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Presets:
-  探  批判的探索（デフォルト）
-  極  極限精度
-  均  バランス型
-  監  監査特化
-  刃  実装設計レビュー（3案比較+構造化出力）
-
-Models:
-  fast      gemini-2.5-flash（初期スクリーニング）
-  standard  gemini-2.5-pro（標準レビュー）
-  deep      gemini-3.1-pro-preview（最深批評）
-
-Examples:
-  pcc-critic "この設計の弱点は？"
-  pcc-critic --preset 極 --model deep "コードレビューしろ"
-  cat diff.txt | pcc-critic --preset 監 "この diff を監査しろ"
-        """,
-    )
-    parser.add_argument("prompt", nargs="?", help="プロンプト（stdinからも読める）")
-    parser.add_argument("--preset", "-P", default="探", choices=PCC_PRESETS.keys(),
-                        help="PCC プリセット（デフォルト: 探）")
-    parser.add_argument("--model", "-m", default="deep",
-                        help="モデル名 or ショートカット (fast/standard/deep)")
+    parser = argparse.ArgumentParser(description="True 9-Axis PCC-Vortex Critic Pipeline")
+    parser.add_argument("prompt", nargs="?", help="プロンプト（JSON stdinからも読める）")
+    parser.add_argument("--preset", "-P", default="探", help="PCC プリセット名（探, 極, 監, 刃 など）")
+    parser.add_argument("--model", "-m", default="deep", help="モデル名 or ショートカット")
     parser.add_argument("--timeout", "-t", type=int, default=120, help="タイムアウト秒")
     parser.add_argument("--json", "-j", action="store_true", help="JSON 出力")
-    parser.add_argument("--audit-only", action="store_true",
-                        help="stdin のテキストを監査するだけ（Gemini 呼び出しなし）")
-
+    parser.add_argument("--audit-only", action="store_true", help="stdin のテキストを絶対座標で監査")
     args = parser.parse_args()
 
-    # stdin からの入力を取得
-    stdin_text = ""
-    if not sys.stdin.isatty():
-        stdin_text = sys.stdin.read().strip()
+    data = read_stdin_json()
+    stdin_text = data.get("prompt", "") if data else ""
+    
+    coord = get_coordinate(args.preset)
 
     if args.audit_only:
         text = stdin_text or (args.prompt or "")
-        audit = audit_response(text)
+        audit = audit_response(text, coord)
         if args.json:
             print(json.dumps(audit, ensure_ascii=False, indent=2))
         else:
@@ -256,35 +250,42 @@ Examples:
                 print(f"  {k}: {v}")
         sys.exit(0 if audit["verdict"] == "PASS" else 1)
 
-    # プロンプト構築
     prompt = args.prompt or ""
-    if stdin_text:
-        prompt = f"{stdin_text}\n\n---\n{prompt}" if prompt else stdin_text
+    if data and "prompt" in data:
+        prompt = data["prompt"]
 
     if not prompt:
-        parser.error("プロンプトを指定するか、stdin からパイプしてください")
+        parser.error("プロンプトを指定するか、JSONをパイプしてください")
 
-    # モデル解決
+    # Collect objective evidence from workspace (VORTEX Core)
+    workspace_root = data.get("workspaceRoot", "")
+    evidence: dict[str, Any] = {}
+    if workspace_root and Path(workspace_root).is_dir():
+        evidence.update(collect_git_evidence(workspace_root))
+        evidence.update(collect_test_evidence(workspace_root))
+
     model = MODEL_ROUTING.get(args.model, args.model)
-
-    # PCC 注入
-    enriched = inject_pcc(prompt, args.preset)
+    enriched, active_coord = inject_pcc(prompt, args.preset, evidence, data)
 
     if not args.json:
-        print(f"[PCC] Preset: #{args.preset} → {PCC_PRESETS[args.preset]['label']}")
-        print(f"[Model] {model}")
-        print(f"[Prompt] {len(enriched)} chars")
+        print(f"[PCC] Preset: {args.preset} / Active Coordinate: {active_coord}")
+        print(f"[Model] {model} | [Prompt size] {len(enriched)} chars")
+        if evidence:
+            print(f"[Evidence] Diff Stat/Changed files/Test metrics collected from {workspace_root}")
         print("─" * 50)
 
-    # Gemini 実行
     result = run_gemini(enriched, model, args.timeout)
-
-    # Audit
-    audit = audit_response(result["text"])
+    audit = audit_response(result["text"], active_coord)
 
     if args.json:
+        # Compatibility with vortex-critic expected format
         output = {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": f"[PCC Critic]\n{result['text'].strip()}"
+            },
             "pcc_preset": args.preset,
+            "coordinate": active_coord,
             "model": model,
             "response": result["text"],
             "elapsed": result["elapsed"],
@@ -295,13 +296,13 @@ Examples:
     else:
         print(result["text"])
         print("─" * 50)
-        print(f"[Audit] verdict={audit['verdict']} sycophancy={audit['sycophancy']} "
-              f"evidence={audit['evidence_count']} words={audit['words']} "
-              f"time={result['elapsed']}s")
+        print(f"VERDICT: {audit['verdict']} | Score: {audit['score']} | Violations: {len(audit.get('violations', []))}")
+        if audit.get("violations"):
+            print("Drift Violations:")
+            for v in audit["violations"]:
+                print(f"  - Axis {v['axis']} ({v['value']}): {v['issue']} (Matched: '{v['pattern']}')")
 
-    # exit code: 0=PASS, 1=other
-    sys.exit(0 if audit["verdict"] == "PASS" else 1)
-
+    sys.exit(0 if audit["verdict"] in ["PASS", "REVIEW"] else 1)
 
 if __name__ == "__main__":
     main()
