@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-vortex-critic.py
+vortex-critic.py — VORTEX Protocol DeepSeek Critic Hook (v2.0)
 
-VORTEX Protocol enhanced DeepSeek critic hook.
-Cloned from deepseek-critic.py with evidence-based verification layer.
+Real PCC 9-axis coordinate engine + evidence-based verification.
+Designed for Fine-Tuning data collection.
 
-Principle: "worker の自己申告は信用しない。
-git diff、tests、lint、exit code、changed files で判定する。
-スコープ外変更は落とす。"
+PCC axes (from Newgate fusion_gate.py canonical spec):
+  I=Initiative  F=Focus  C=Context  B=Boldness  R=Resistance
+  M=Memory      E=Emotion  N=Number  S=Session
+
+Evidence principle:
+  "workerの自己申告は信用しない。
+   git diff、tests、lint、exit code、changed files で判定する。
+   スコープ外変更は落とす。"
 
 Usage:
-  1. As a VS Code workspace hook (.copilot/hooks/)
-  2. As a standalone audit tool: echo '{"prompt":"...","workspaceRoot":"/path"}' | python3 vortex-critic.py
-  3. As an MCP umpire (called from fusion-orchestrator-mcp)
+  1. VS Code workspace hook (.copilot/hooks/)
+  2. Standalone: echo '{"prompt":"...","workspaceRoot":"/path"}' | python3 vortex-critic.py
+  3. MCP umpire (called from fusion-orchestrator-mcp)
 """
 
 from __future__ import annotations
@@ -21,85 +26,173 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
-# ── PCC Presets (調教済み) ───────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# PCC 9-Axis Coordinate Engine (canonical, from Newgate fusion_gate.py)
+# ═══════════════════════════════════════════════════════════════════════════════
 
-PCC_PRESETS = {
-    "探": {
-        "label": "#探",
-        "constraints": [
-            "Challenge assumptions and look for specific weaknesses.",
-            "Do not be agreeable for its own sake.",
-            "Prefer concrete risks over vague criticism.",
-            "If something is uncertain, mark it as an assumption.",
-        ],
-    },
-    "極": {
-        "label": "#極",
-        "constraints": [
-            "Be concise and structured.",
-            "Answer only what is useful for moving the task forward.",
-            "Avoid filler and social niceties.",
-        ],
-    },
-    "均": {
-        "label": "#均",
-        "constraints": [
-            "Balance strengths and weaknesses.",
-            "Pair each weakness with one practical improvement.",
-        ],
-    },
-    "監": {
-        "label": "#監",
-        "constraints": [
-            "Judge based on evidence and likely verification needs.",
-            "Ignore self-reports of success if they lack support.",
-            "Call out missing evidence explicitly.",
-            "If git diff is provided, verify claims against actual changes.",
-            "If test exit code is non-zero, mark as UNVERIFIED regardless of prose.",
-        ],
-    },
-    "刃": {
-        "label": "#刃",
-        "constraints": [
-            "Behave like a strict implementation reviewer.",
-            "Prefer concrete change plans over abstract commentary.",
-            "Recommend the safest next step with reasons.",
-        ],
-    },
-    # VORTEX Protocol 専用プリセット
-    "渦": {
-        "label": "#渦 (VORTEX)",
-        "constraints": [
-            "You are a VORTEX Protocol auditor. Your sole purpose is to detect the Completion Illusion.",
-            "NEVER trust self-reports of success. Only trust objective evidence.",
-            "If git diff is provided, verify that every claimed change exists in the diff.",
-            "If test results are provided, verify exit code === 0. Non-zero = UNVERIFIED.",
-            "If no verification evidence (test output, lint results, exit codes) is attached, mark as UNVERIFIED_MUTATION.",
-            "Flag any changed files that were NOT mentioned in the original task scope as SCOPE_VIOLATION.",
-            "Output a binary verdict: VERIFIED or UNVERIFIED, followed by evidence list.",
-            "Be relentless. The AI you are auditing has a known tendency to claim completion one step early.",
-        ],
-    },
+PCC_AXES = ["I", "F", "C", "B", "R", "M", "E", "N", "S"]
+
+PCC_MEANINGS = {
+    "I": {1: "確認を最優先", 9: "直ちに躊躇なく実行"},
+    "F": {1: "広く浅い視点", 9: "一点集中、脱線禁止"},
+    "C": {1: "文脈無視", 9: "文脈完全維持"},
+    "B": {1: "保守的", 9: "創造性最大化"},
+    "R": {1: "同調", 9: "迎合厳禁"},
+    "M": {1: "過去無視", 9: "過去最大活用"},
+    "E": {1: "感情完全排除", 9: "感情許容"},
+    "N": {1: "結論1つ", 9: "複数網羅的列挙"},
+    "S": {1: "新規扱い", 9: "前の続き"},
 }
 
+# Presets: 9-digit coordinate strings
+# Original Newgate presets + new auditor/reviewer presets
+PCC_PRESETS = {
+    # ── Originals (from fusion_gate.py) ──
+    "#極": "998598118",  # 極限: 即実行、一点集中、保守的→高創造、迎合禁止
+    "#探": "525955895",  # 探索: バランス、文脈維持、迎合禁止、網羅列挙
+    "#均": "555555555",  # 均衡: 全軸ニュートラル
+    "#静": "385255215",  # 静観: 確認優先、広い視点、保守的、感情排除
+    "#動": "957855595",  # 動的: 即実行、一点集中、高文脈、迎合禁止
+
+    # ── New: Auditor/Reviewer presets ──
+    "#監": "195199115",  # 監査: 確認最優先、一点集中、保守的、迎合厳禁、過去最大活用、感情排除、結論1つ
+    "#刃": "995599118",  # 刃: 即実行、一点集中、中文脈、迎合禁止、感情排除、結論1つ、継続
+    "#渦": "199199119",  # 渦(VORTEX): 確認最優先、集中、全文脈、保守的、迎合厳禁、全記憶、感情排除、結論1つ、継続
+}
+
+
+def parse_pcc_coordinate(coord_str: str) -> list[int]:
+    """Parse a 9-digit coordinate string into axis values."""
+    if len(coord_str) != 9 or not coord_str.isdigit():
+        return [5] * 9  # default neutral
+    return [int(c) for c in coord_str]
+
+
+def resolve_preset(name: str) -> str:
+    """Resolve preset name to 9-digit coordinate. Accepts with/without #."""
+    key = name if name.startswith("#") else f"#{name}"
+    return PCC_PRESETS.get(key, "555555555")
+
+
+def apply_overrides(coord: str, override_text: str) -> str:
+    """Apply d-overrides like 'd5:3 d9:1' to a coordinate string."""
+    import re
+    coord_list = list(coord)
+    for idx_str, val_str in re.findall(r"d(\d):(\d)", override_text):
+        idx = int(idx_str) - 1
+        if 0 <= idx < 9:
+            coord_list[idx] = val_str
+    return "".join(coord_list)
+
+
+def generate_constraints(coord: str) -> list[str]:
+    """Generate human-readable constraint strings from a coordinate.
+
+    Only extreme values (≤2 or ≥8) produce constraints.
+    This matches Newgate's fusion_gate.py behavior exactly.
+    """
+    constraints = []
+    for i, val_str in enumerate(coord):
+        val = int(val_str)
+        axis = PCC_AXES[i]
+        if val <= 2:
+            constraints.append(PCC_MEANINGS[axis][1])
+        elif val >= 8:
+            constraints.append(PCC_MEANINGS[axis][9])
+    return constraints
+
+
+def format_coordinate_header(coord: str, preset_name: str = "") -> str:
+    """Format a coordinate into a human-readable header block."""
+    axes = parse_pcc_coordinate(coord)
+    lines = [f"[PCC Coordinate: {coord}]"]
+    if preset_name:
+        lines[0] += f" (preset: {preset_name})"
+    lines.append("Axis values: " + " ".join(
+        f"{PCC_AXES[i]}={axes[i]}" for i in range(9)
+    ))
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VORTEX Evidence Collection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def collect_git_evidence(workspace_root: str) -> dict[str, Any]:
+    """Collect objective evidence from git state."""
+    evidence: dict[str, Any] = {}
+
+    commands = {
+        "diff_stat": ["git", "diff", "--stat", "HEAD"],
+        "changed_files": ["git", "diff", "--name-only", "HEAD"],
+        "staged_files": ["git", "diff", "--name-only", "--cached"],
+        "last_commit": ["git", "log", "-1", "--oneline"],
+        "branch": ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        "diff_patch": ["git", "diff", "HEAD", "--no-color", "-U3"],
+    }
+
+    for key, cmd in commands.items():
+        try:
+            result = subprocess.run(
+                cmd, cwd=workspace_root, capture_output=True,
+                text=True, timeout=5, check=False
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                val = result.stdout.strip()
+                if key in ("changed_files", "staged_files"):
+                    evidence[key] = val.split("\n")
+                elif key == "diff_patch":
+                    # Cap diff size for prompt budget
+                    evidence[key] = val[:8000]
+                else:
+                    evidence[key] = val
+        except Exception:
+            pass
+
+    return evidence
+
+
+def collect_test_evidence(workspace_root: str) -> dict[str, Any]:
+    """Check for recent test results or common test artifacts."""
+    evidence: dict[str, Any] = {}
+    ws = Path(workspace_root)
+
+    test_artifacts = [
+        "test-results.xml", "junit.xml", ".pytest_cache/lastfailed",
+        "coverage/lcov.info", "coverage/coverage-summary.json",
+    ]
+    found = []
+    for artifact in test_artifacts:
+        if (ws / artifact).exists():
+            found.append(artifact)
+    if found:
+        evidence["test_artifacts_found"] = found
+
+    return evidence
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Config & API Key Resolution
+# ═══════════════════════════════════════════════════════════════════════════════
 
 DEFAULT_CONFIG = {
     "enabled": True,
     "provider": "deepseek",
     "model": "deepseek-chat",
-    "preset": "渦",  # VORTEX preset by default
+    "preset": "渦",
     "baseUrl": "https://api.deepseek.com/chat/completions",
     "keychainService": "deepseek-api",
     "keychainAccount": "default",
     "fallbackKeychainServices": ["deepseek-api", "deepseek", "DeepSeek API"],
     "maxTokens": 1200,
-    "temperature": 0.1,  # Lower temp for stricter judgment
+    "temperature": 0.1,
     "promptContextChars": 16000,
     "responseChars": 4000,
     "styleNote": "Return critique in Japanese. Be dense, concrete, and merciless about missing evidence.",
@@ -110,89 +203,15 @@ DEFAULT_CONFIG = {
         "test/lint exit code verification",
         "scope violation detection",
     ],
+    # FT data collection
+    "ft_data_dir": os.path.expanduser("~/.vortex-critic"),
+    "ft_collect": True,
 }
 
-
-# ── Evidence Collection (VORTEX Core) ────────────────────────────────────────
-
-def collect_git_evidence(workspace_root: str) -> dict[str, Any]:
-    """Collect objective evidence from git state."""
-    evidence: dict[str, Any] = {}
-
-    try:
-        # git diff --stat for changed files
-        result = subprocess.run(
-            ["git", "diff", "--stat", "HEAD"],
-            cwd=workspace_root, capture_output=True, text=True, timeout=5, check=False
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            evidence["diff_stat"] = result.stdout.strip()
-    except Exception:
-        pass
-
-    try:
-        # git diff --name-only for file list
-        result = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD"],
-            cwd=workspace_root, capture_output=True, text=True, timeout=5, check=False
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            evidence["changed_files"] = result.stdout.strip().split("\n")
-    except Exception:
-        pass
-
-    try:
-        # staged changes too
-        result = subprocess.run(
-            ["git", "diff", "--name-only", "--cached"],
-            cwd=workspace_root, capture_output=True, text=True, timeout=5, check=False
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            evidence["staged_files"] = result.stdout.strip().split("\n")
-    except Exception:
-        pass
-
-    try:
-        # Last commit message (for reference)
-        result = subprocess.run(
-            ["git", "log", "-1", "--oneline"],
-            cwd=workspace_root, capture_output=True, text=True, timeout=5, check=False
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            evidence["last_commit"] = result.stdout.strip()
-    except Exception:
-        pass
-
-    return evidence
-
-
-def collect_test_evidence(workspace_root: str) -> dict[str, Any]:
-    """Check for recent test results or common test artifacts."""
-    evidence: dict[str, Any] = {}
-    ws = Path(workspace_root)
-
-    # Check for common test result files
-    test_artifacts = [
-        "test-results.xml", "junit.xml", ".pytest_cache/lastfailed",
-        "coverage/lcov.info", "coverage/coverage-summary.json",
-    ]
-    found = []
-    for artifact in test_artifacts:
-        path = ws / artifact
-        if path.exists():
-            found.append(str(artifact))
-    if found:
-        evidence["test_artifacts_found"] = found
-
-    return evidence
-
-
-# ── Core Functions ───────────────────────────────────────────────────────────
 
 def load_config() -> dict[str, Any]:
     config_path = Path(__file__).with_name("vortex-critic.config.json")
     if not config_path.exists():
-        # Fallback to deepseek config
         config_path = Path(__file__).with_name("deepseek-critic.config.json")
     if not config_path.exists():
         return dict(DEFAULT_CONFIG)
@@ -228,11 +247,7 @@ def read_keychain_secret(service: str, account: str | None) -> str | None:
     for cmd in variants:
         try:
             proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=4,
-                check=False,
+                cmd, capture_output=True, text=True, timeout=4, check=False,
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 return proc.stdout.strip()
@@ -263,41 +278,65 @@ def resolve_api_key(config: dict[str, Any]) -> str | None:
     return None
 
 
-def build_messages(data: dict[str, Any], config: dict[str, Any], evidence: dict[str, Any]) -> list[dict[str, str]]:
-    preset_name = config.get("preset", "渦")
-    preset = PCC_PRESETS.get(preset_name, PCC_PRESETS["渦"])
-    constraints = "\n".join(f"- {item}" for item in preset["constraints"])
+# ═══════════════════════════════════════════════════════════════════════════════
+# Prompt Construction (PCC-aware)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_messages(
+    data: dict[str, Any],
+    config: dict[str, Any],
+    evidence: dict[str, Any],
+    coordinate: str,
+    preset_name: str,
+) -> list[dict[str, str]]:
+    """Build DeepSeek messages with real PCC coordinate injection."""
+
+    constraints = generate_constraints(coordinate)
+    constraint_block = "\n".join(f"- {c}" for c in constraints) if constraints else "- (neutral coordinate, no extreme constraints)"
     style_note = config.get("styleNote", DEFAULT_CONFIG["styleNote"])
     focus_areas = "\n".join(f"- {item}" for item in config.get("focusAreas", []))
+
     prompt = str(data.get("prompt", ""))
     active_file = data.get("activeFile")
     workspace_root = data.get("workspaceRoot")
+    focus_block = f"Focus Areas:\n{focus_areas}\n" if focus_areas else ""
 
-    focus_block = ""
-    if focus_areas:
-        focus_block = "- Extra focus areas:\n" + focus_areas + "\n"
-
+    # ── System Prompt: PCC + VORTEX ──
     system_prompt = (
-        f"[PCC Protocol: {preset['label']}]\n"
-        "[VORTEX Evidence Verification Layer]\n"
+        f"{format_coordinate_header(coordinate, preset_name)}\n\n"
+
+        "[VORTEX Evidence Verification Protocol]\n"
         "You are a read-only critic and evidence auditor for another coding agent.\n"
-        "You do not implement the task. You verify claims against evidence.\n\n"
+        "You do not implement the task. You verify claims against objective evidence.\n\n"
+
         "Core Principle:\n"
         "- workerの自己申告は信用しない\n"
         "- git diff、tests、lint、exit code、changed files で判定する\n"
         "- スコープ外変更は落とす\n\n"
-        "Constraints:\n"
-        f"{constraints}\n"
-        f"- {style_note}\n"
+
+        f"PCC Behavioral Constraints (auto-generated from coordinate {coordinate}):\n"
+        f"{constraint_block}\n"
+        f"- {style_note}\n\n"
+
         f"{focus_block}"
-        "\nOutput format:\n"
-        "1. VERDICT: VERIFIED or UNVERIFIED\n"
-        "2. Evidence found (list what objective evidence exists)\n"
-        "3. Evidence missing (what should exist but doesn't)\n"
-        "4. Scope check (any files changed outside of intended scope?)\n"
-        "5. Next required action (concrete verification command to run)\n"
+
+        "\nRequired Output (structured JSON for FT collection):\n"
+        "```json\n"
+        "{\n"
+        '  "verdict": "VERIFIED | UNVERIFIED | UNVERIFIED_MUTATION",\n'
+        '  "confidence": 0.0-1.0,\n'
+        '  "evidence_found": ["list of objective evidence items"],\n'
+        '  "evidence_missing": ["list of what should exist but does not"],\n'
+        '  "scope_violations": ["files changed outside intended scope"],\n'
+        '  "findings": ["specific issues found"],\n'
+        '  "next_action": "concrete verification command to run",\n'
+        '  "reasoning": "brief explanation of verdict"\n'
+        "}\n"
+        "```\n"
+        "After the JSON block, provide a brief Japanese summary (3-5 lines).\n"
     )
 
+    # ── User Prompt: evidence + task ──
     context_lines = []
     if isinstance(active_file, str) and active_file:
         context_lines.append(f"Active file: {active_file}")
@@ -306,7 +345,9 @@ def build_messages(data: dict[str, Any], config: dict[str, Any], evidence: dict[
 
     # Inject objective evidence
     if evidence:
-        context_lines.append("\n--- Objective Evidence (collected by VORTEX, not self-reported) ---")
+        context_lines.append("\n--- Objective Evidence (collected by VORTEX, NOT self-reported) ---")
+        if "branch" in evidence:
+            context_lines.append(f"Branch: {evidence['branch']}")
         if "diff_stat" in evidence:
             context_lines.append(f"Git diff stat:\n{evidence['diff_stat']}")
         if "changed_files" in evidence:
@@ -315,28 +356,29 @@ def build_messages(data: dict[str, Any], config: dict[str, Any], evidence: dict[
             context_lines.append(f"Staged files: {', '.join(evidence['staged_files'])}")
         if "last_commit" in evidence:
             context_lines.append(f"Last commit: {evidence['last_commit']}")
+        if "diff_patch" in evidence:
+            context_lines.append(f"Diff patch (truncated):\n```diff\n{evidence['diff_patch']}\n```")
         if "test_artifacts_found" in evidence:
             context_lines.append(f"Test artifacts found: {', '.join(evidence['test_artifacts_found'])}")
-        if not evidence:
-            context_lines.append("⚠️ NO OBJECTIVE EVIDENCE FOUND. Worker has not run any verification.")
+    else:
+        context_lines.append("⚠️ NO OBJECTIVE EVIDENCE FOUND. Worker has not run any verification.")
 
-        # Check for test exit code passed via stdin
-        if "test_exit_code" in data:
-            context_lines.append(f"Test exit code: {data['test_exit_code']}")
-        if "lint_exit_code" in data:
-            context_lines.append(f"Lint exit code: {data['lint_exit_code']}")
-        if "scope_files" in data:
-            context_lines.append(f"Intended scope: {', '.join(data['scope_files'])}")
+    # Pass-through exit codes
+    if "test_exit_code" in data:
+        context_lines.append(f"Test exit code: {data['test_exit_code']}")
+    if "lint_exit_code" in data:
+        context_lines.append(f"Lint exit code: {data['lint_exit_code']}")
+    if "scope_files" in data:
+        context_lines.append(f"Intended scope: {', '.join(data['scope_files'])}")
 
     context_block = "\n".join(context_lines)
-    if context_block:
-        context_block = f"Known context:\n{context_block}\n\n"
 
     user_prompt = (
         "Review the following AI agent output as a VORTEX auditor.\n"
-        "Do not answer the original request. Only verify whether the agent's claims are backed by evidence.\n"
-        "If the agent claims 'done' or 'completed' without test/lint evidence, mark UNVERIFIED.\n\n"
-        f"{context_block}"
+        "Do not answer the original request. Only verify whether claims are backed by evidence.\n"
+        "If the agent claims 'done' without test/lint evidence, mark UNVERIFIED.\n\n"
+        f"{context_block}\n\n"
+        f"--- Agent Output to Audit ---\n"
         f"{prompt[: int(config.get('promptContextChars', DEFAULT_CONFIG['promptContextChars']))]}"
     )
 
@@ -346,7 +388,12 @@ def build_messages(data: dict[str, Any], config: dict[str, Any], evidence: dict[
     ]
 
 
-def call_deepseek(messages: list[dict[str, str]], config: dict[str, Any], api_key: str) -> str | None:
+# ═══════════════════════════════════════════════════════════════════════════════
+# DeepSeek API Call
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def call_deepseek(messages: list[dict[str, str]], config: dict[str, Any], api_key: str) -> Optional[dict]:
+    """Call DeepSeek API and return structured result with usage stats."""
     payload = {
         "model": config.get("model", DEFAULT_CONFIG["model"]),
         "messages": messages,
@@ -364,22 +411,89 @@ def call_deepseek(messages: list[dict[str, str]], config: dict[str, Any], api_ke
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=30) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        return f"VORTEX critic failed with HTTP {exc.code}."
-    except Exception:
-        return None
+        return {"error": f"HTTP {exc.code}", "text": None}
+    except Exception as exc:
+        return {"error": str(exc), "text": None}
 
     try:
         text = body["choices"][0]["message"]["content"]
+        usage = body.get("usage", {})
+        return {
+            "text": text[:int(config.get("responseChars", DEFAULT_CONFIG["responseChars"]))],
+            "usage": {
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            },
+            "model": body.get("model", config.get("model", "")),
+        }
     except Exception:
-        return None
+        return {"error": "invalid response structure", "text": None}
 
-    if not isinstance(text, str):
-        return None
-    return text[: int(config.get("responseChars", DEFAULT_CONFIG["responseChars"]))]
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# FT Data Collection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def save_ft_record(
+    config: dict[str, Any],
+    coordinate: str,
+    preset_name: str,
+    evidence: dict[str, Any],
+    messages: list[dict[str, str]],
+    response_text: str,
+    usage: dict[str, int],
+    model: str,
+) -> None:
+    """Save a structured FT training record to JSONL.
+
+    Each line is a complete (system, user, assistant) triple with metadata,
+    ready for SFT or DPO fine-tuning pipelines.
+    """
+    if not config.get("ft_collect", True):
+        return
+
+    ft_dir = Path(os.path.expanduser(config.get("ft_data_dir", DEFAULT_CONFIG["ft_data_dir"])))
+    ft_dir.mkdir(parents=True, exist_ok=True)
+    ft_path = ft_dir / "ft_data.jsonl"
+
+    record = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "coordinate": coordinate,
+        "preset": preset_name,
+        "model": model,
+        "usage": usage,
+
+        # SFT training format (messages array)
+        "messages": [
+            messages[0],  # system
+            messages[1],  # user
+            {"role": "assistant", "content": response_text},  # target
+        ],
+
+        # Structured metadata for filtering/analysis
+        "evidence_summary": {
+            "has_diff": "diff_stat" in evidence or "diff_patch" in evidence,
+            "has_tests": "test_artifacts_found" in evidence,
+            "changed_file_count": len(evidence.get("changed_files", [])),
+            "has_exit_codes": "test_exit_code" in evidence or "lint_exit_code" in evidence,
+        },
+    }
+
+    try:
+        with open(ft_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        print(f"[VORTEX] FT record saved: {ft_path}", file=sys.stderr)
+    except Exception as exc:
+        print(f"[VORTEX] FT save failed: {exc}", file=sys.stderr)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Hook Output
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def emit(additional_context: str | None) -> int:
     payload = {
@@ -392,6 +506,10 @@ def emit(additional_context: str | None) -> int:
     print(json.dumps(payload, ensure_ascii=False))
     return 0
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def main() -> int:
     config = load_config()
@@ -408,26 +526,60 @@ def main() -> int:
         print("DeepSeek API key missing.", file=sys.stderr)
         return emit(None)
 
-    # Collect objective evidence from workspace (VORTEX Core)
+    # ── Resolve PCC Coordinate ──
+    preset_name = config.get("preset", "渦")
+    coordinate = resolve_preset(preset_name)
+
+    # Allow runtime override via stdin data
+    if "pcc_coordinate" in data:
+        coordinate = str(data["pcc_coordinate"])
+        preset_name = "custom"
+    if "pcc_overrides" in data:
+        coordinate = apply_overrides(coordinate, str(data["pcc_overrides"]))
+
+    print(f"[VORTEX] PCC coordinate: {coordinate} (preset: {preset_name})", file=sys.stderr)
+    print(f"[VORTEX] Constraints: {generate_constraints(coordinate)}", file=sys.stderr)
+
+    # ── Collect Objective Evidence ──
     workspace_root = data.get("workspaceRoot", "")
     evidence: dict[str, Any] = {}
     if workspace_root and Path(workspace_root).is_dir():
         evidence.update(collect_git_evidence(workspace_root))
         evidence.update(collect_test_evidence(workspace_root))
 
-    # Pass through any test/lint exit codes from caller
     if "test_exit_code" in data:
         evidence["test_exit_code"] = data["test_exit_code"]
     if "lint_exit_code" in data:
         evidence["lint_exit_code"] = data["lint_exit_code"]
 
-    messages = build_messages(data, config, evidence)
-    response = call_deepseek(messages, config, api_key)
-    if not response:
-        print("VORTEX critic returned no response.", file=sys.stderr)
+    # ── Build + Call ──
+    messages = build_messages(data, config, evidence, coordinate, preset_name)
+    result = call_deepseek(messages, config, api_key)
+
+    if not result or result.get("text") is None:
+        error = result.get("error", "no response") if result else "no response"
+        print(f"VORTEX critic error: {error}", file=sys.stderr)
         return emit(None)
 
-    additional_context = f"[VORTEX Critic]\n{response.strip()}"
+    response_text = result["text"]
+
+    # ── FT Data Collection ──
+    save_ft_record(
+        config=config,
+        coordinate=coordinate,
+        preset_name=preset_name,
+        evidence=evidence,
+        messages=messages,
+        response_text=response_text,
+        usage=result.get("usage", {}),
+        model=result.get("model", ""),
+    )
+
+    # ── Emit to Copilot Hook ──
+    additional_context = (
+        f"[VORTEX Critic | PCC:{coordinate}]\n"
+        f"{response_text.strip()}"
+    )
     return emit(additional_context)
 
 
