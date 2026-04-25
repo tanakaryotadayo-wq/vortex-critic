@@ -76,6 +76,7 @@ vortex-critic/
 | Path | 内容 |
 |------|------|
 | `docs/README.md` | VORTEX 複合モジュール全体の定義書 |
+| `docs/acp-pcc-memory-fusion-gate.md` | ACP / PCC / Memory / Fusion Gate のざっくり責務境界 |
 | `docs/extension.md` | VS Code 拡張シェル / UI / command dispatcher |
 | `docs/critic.md` | DeepSeek / VORTEX critic モジュール |
 | `docs/gemini.md` | Gemini A2A bridge / memory pipeline モジュール |
