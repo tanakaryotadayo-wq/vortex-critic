@@ -19,9 +19,9 @@ from pathlib import Path
 from typing import Any
 
 
-SCRIPT_VERSION = "1.0.0-acp-copilot-cli"
+SCRIPT_VERSION = "1.1.0-pe-umpire-copilot-cli"
 SCRIPT_NAME = "copilot-cli-critic.py"
-DEFAULT_MODEL = "gpt-5.2"
+DEFAULT_MODEL = "gpt-5-mini"
 DEFAULT_TIMEOUT_SECONDS = 180
 CORE_SCRIPT = Path(__file__).with_name("vortex-critic.py")
 
@@ -144,11 +144,14 @@ def build_cli_prompt(messages: list[dict[str, str]], model: str) -> str:
     system = messages[0]["content"]
     user = messages[1]["content"]
     return (
-        "[ACP GitHub Copilot CLI Critic Lane]\n"
+        "[ACP GitHub Copilot CLI Perfect Equilibrium Umpire Lane]\n"
         "Runtime: GitHub Copilot CLI\n"
         f"Model: {model}\n"
         "Mode: read-only plan audit. Do not edit files. Do not run shell commands.\n"
-        "You are comparing claims against objective evidence. Return the required JSON block first.\n\n"
+        "Role: cheap final lie detector for Gemini CLI/PCC critic output and GH-bound commits.\n"
+        "Focus only on hallucination control: unsupported claims, missing evidence, scope drift, "
+        "semantic drift, fake verification, and completion illusion. Do not redesign the patch.\n"
+        "Return the required JSON block first. VERIFIED means the claims are grounded in objective evidence.\n\n"
         "--- System Contract ---\n"
         f"{system}\n\n"
         "--- User Evidence Packet ---\n"
@@ -165,8 +168,6 @@ def run_copilot_cli(prompt: str, config: dict[str, Any], workspace_root: str | N
     command = [
         copilot_bin,
         "--plan",
-        "--mode",
-        "plan",
         "--model",
         model,
         "--prompt",
@@ -208,7 +209,7 @@ def run_copilot_cli(prompt: str, config: dict[str, Any], workspace_root: str | N
             "error": "TIMEOUT",
             "exit_code": -1,
             "elapsed": int(config.get("copilotTimeoutSeconds", DEFAULT_TIMEOUT_SECONDS)),
-            "command": [copilot_bin, "--plan", "--mode", "plan", "--model", model, "--prompt", "[omitted]"],
+            "command": [copilot_bin, "--plan", "--model", model, "--prompt", "[omitted]"],
             "model": model,
         }
 
@@ -220,7 +221,7 @@ def run_copilot_cli(prompt: str, config: dict[str, Any], workspace_root: str | N
         "stderr": stderr[:4000] if stderr else "",
         "exit_code": result.returncode,
         "elapsed": round(time.monotonic() - started, 1),
-        "command": [copilot_bin, "--plan", "--mode", "plan", "--model", model, "--prompt", "[omitted]"],
+        "command": [copilot_bin, "--plan", "--model", model, "--prompt", "[omitted]"],
         "model": model,
     }
 

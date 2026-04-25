@@ -1,0 +1,9 @@
+{
+  "provider": "copilot-cli",
+  "model": "gpt-5-mini",
+  "copilotBinary": "copilot",
+  "copilotTimeoutSeconds": 180,
+  "copilotAddDir": false,
+  "copilotDisableBuiltinMcps": true,
+  "ft_data_dir": "~/.vortex-critic/copilot-cli"
+}

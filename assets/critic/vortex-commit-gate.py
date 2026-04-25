@@ -610,8 +610,6 @@ def main() -> int:
     scope = scope_result(changed_files, args.scope_file)
 
     packet = build_packet(args, evidence, test_results)
-    # live/dry_run の分岐は各レーンスクリプト内部で行う
-    # (packet["dry_run"] が True なら各スクリプトは API を呼ばずプレビューを返す)
     lanes: dict[str, Any] = {}
     lanes["gemini-cli"] = run_lane("gemini-cli", GEMINI_SCRIPT, packet, args.lane_timeout)
     lanes["copilot-cli"] = run_lane("copilot-cli", COPILOT_SCRIPT, packet, args.lane_timeout)
