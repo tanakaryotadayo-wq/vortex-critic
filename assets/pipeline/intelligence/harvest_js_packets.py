@@ -28,7 +28,8 @@ TARGET_EXTS = {".js", ".mjs", ".cjs", ".ts", ".tsx"}
 def iter_source_files(source_dir: Path) -> Iterable[Path]:
     """対象ディレクトリ配下のJS/TSファイルを列挙する。"""
     for root, dirs, files in os.walk(source_dir):
-        dirs[:] = [name for name in dirs if name not in SKIP_DIRS]
+        dirs[:] = [name for name in dirs if name not in SKIP_DIRS
+                   and not name.startswith(".venv")]
         root_path = Path(root)
         for filename in files:
             if filename.endswith(".d.ts"):
