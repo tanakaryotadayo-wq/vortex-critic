@@ -589,6 +589,11 @@ def serve(engine: Optional[CBFEngine] = None, port: int = 9801, host: str = "127
     signal.signal(signal.SIGTERM, shutdown_handler)
     _log("=" * 60)
     _log("Coordinate Build Framework v1.3 起動")
+    try:
+        import setproctitle
+        setproctitle.setproctitle("cbf-engine")
+    except ImportError:
+        pass
     _log(f"  Listen   : http://{host}:{port}")
     _log(f"  Config   : {engine.config_path}")
     _log(f"  Log      : {engine.log_path}")
