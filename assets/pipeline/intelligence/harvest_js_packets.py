@@ -18,7 +18,10 @@ JS_PATTERNS = [
     re.compile(r"exports\.([A-Za-z_$][\w$]*)\s*="),
 ]
 
-SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv"}
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv",
+             "venv", ".venv-embed", "site-packages",
+             "dist", "build", ".eggs", ".tox", ".mypy_cache",
+             ".pytest_cache", ".ruff_cache"}
 TARGET_EXTS = {".js", ".mjs", ".cjs", ".ts", ".tsx"}
 
 

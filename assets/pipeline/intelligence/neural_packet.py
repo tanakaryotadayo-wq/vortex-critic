@@ -558,7 +558,13 @@ class AssetHarvester:
         seen_ids = set()
 
         for root, dirs, files in os.walk(repo_path):
-            dirs[:] = [name for name in dirs if name not in ("__pycache__", ".git", "node_modules", ".venv")]
+            # venv系・ビルド成果物・テスト環境を除外
+            _SKIP = {"__pycache__", ".git", "node_modules", ".venv",
+                      "venv", ".venv-embed", "site-packages",
+                      "dist", "build", ".eggs", ".tox", ".mypy_cache",
+                      ".pytest_cache", ".ruff_cache"}
+            dirs[:] = [name for name in dirs if name not in _SKIP
+                       and not name.startswith(".venv")]
             for filename in files:
                 if not filename.endswith(".py"):
                     continue
